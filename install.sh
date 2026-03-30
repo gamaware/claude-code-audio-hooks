@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install Claude Code audio hooks
 #
-# Copies hook scripts to ~/.claude/hooks/ and prints setup instructions.
+# Copies the hook script to ~/.claude/hooks/ and prints setup instructions.
 # Does NOT modify settings.json — you must merge the config manually.
 
 set -euo pipefail
@@ -15,9 +15,11 @@ echo ""
 # --- Check prerequisites ---
 
 missing=()
-for cmd in jq aws curl; do
+for cmd in jq claude curl; do
   if ! command -v "$cmd" &>/dev/null; then
     missing+=("$cmd")
+  else
+    echo "[OK] $cmd"
   fi
 done
 
@@ -39,33 +41,32 @@ if [ ${#missing[@]} -gt 0 ]; then
   echo ""
 fi
 
-# --- Copy hooks ---
+# --- Copy hook ---
 
 mkdir -p "$HOOKS_DIR"
 
 cp "$SCRIPT_DIR/hooks/elevenlabs-speak.sh" "$HOOKS_DIR/"
-cp "$SCRIPT_DIR/hooks/stop-sound.sh" "$HOOKS_DIR/"
 chmod +x "$HOOKS_DIR/elevenlabs-speak.sh"
-chmod +x "$HOOKS_DIR/stop-sound.sh"
 
-echo "[OK] Hooks installed to $HOOKS_DIR"
+echo ""
+echo "[OK] Hook installed to $HOOKS_DIR/elevenlabs-speak.sh"
 echo ""
 
 # --- Print next steps ---
 
 echo "=== Next Steps ==="
 echo ""
-echo "1. Set your ElevenLabs API key in ~/.claude/settings.json:"
+echo "1. Get an ElevenLabs API key (free tier works):"
+echo "   See docs/elevenlabs-setup.md for step-by-step instructions."
+echo ""
+echo "2. Add your API key to ~/.claude/settings.json:"
 echo ""
 echo "   \"env\": {"
 echo "     \"ELEVENLABS_API_KEY\": \"your-key-here\""
 echo "   }"
 echo ""
-echo "2. Add the hooks config to ~/.claude/settings.json."
-echo "   See config/settings-snippet.json for the full block to merge."
-echo ""
-echo "3. Configure AWS credentials for Bedrock access."
-echo "   See docs/bedrock-setup.md for detailed instructions."
+echo "3. Add the hooks config to ~/.claude/settings.json."
+echo "   See config/settings-snippet.json for the block to merge."
 echo ""
 echo "4. Restart Claude Code to load the new hooks."
 echo ""

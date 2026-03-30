@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# Claude Code TaskCompleted hook — spoken summary using Bedrock + ElevenLabs
+# Claude Code audio hook — spoken summary using claude -p + ElevenLabs TTS
 #
-# Flow: Hook payload (stdin) -> Bedrock Haiku (summarize) -> ElevenLabs TTS -> audio playback
-# Requires: jq, aws CLI, curl, ELEVENLABS_API_KEY env var
+# Flow: Hook payload (stdin) -> claude -p Haiku (summarize) -> ElevenLabs TTS -> audio
+#
+# Works with any Claude Code auth method (Max, API key, Bedrock) — no extra
+# credentials needed. The summarization runs through your existing claude CLI.
+#
+# Requires: jq, claude CLI, curl, ELEVENLABS_API_KEY env var
 
 set -euo pipefail
 
 # --- Configuration (override via environment variables) ---
 
 tts_model="${TTS_MODEL:-eleven_turbo_v2_5}"
-aws_region="${AWS_REGION:-us-east-1}"
-bedrock_model="${BEDROCK_MODEL_ID:-us.anthropic.claude-haiku-4-5-20251001-v1:0}"
 
 # All default ElevenLabs voices (male, female, neutral)
 default_voices=(
@@ -48,7 +50,7 @@ fi
 
 # --- Prerequisite checks ---
 
-for cmd in jq aws curl; do
+for cmd in jq claude curl; do
   if ! command -v "$cmd" &>/dev/null; then
     exit 0  # Fail silently — async hooks should not block Claude Code
   fi
@@ -61,8 +63,7 @@ fi
 # --- Temp file cleanup ---
 
 tmpfile="/tmp/claude-tts-$$.mp3"
-bedrock_out="/tmp/claude-tts-bedrock-$$.json"
-trap 'rm -f "$tmpfile" "$bedrock_out"' EXIT
+trap 'rm -f "$tmpfile"' EXIT
 
 # --- Cross-platform audio player ---
 
@@ -80,37 +81,41 @@ play_audio() {
 
 input=$(cat)
 
-# Extract the assistant's last message from the hook payload
+# Skip short responses on Stop hook (TaskCompleted always runs)
+hook_event=$(echo "$input" | jq -r '.hook_event_name // empty')
+if [ "$hook_event" = "Stop" ]; then
+  msg_length=$(echo "$input" | jq -r '.last_assistant_message // "" | length')
+  min_length="${STOP_MIN_MESSAGE_LENGTH:-100}"
+  if [ "$msg_length" -lt "$min_length" ]; then
+    exit 0
+  fi
+fi
+
+# Extract context: last assistant message + recent transcript messages
 summary=$(echo "$input" | jq -r '.last_assistant_message // empty' | head -c 500)
+transcript=$(echo "$input" | jq -r '.transcript_path // empty')
+
+# Enrich with last 2-3 assistant messages from transcript for better context
+if [ -n "$transcript" ] && [ -f "$transcript" ]; then
+  recent=$(tail -20 "$transcript" \
+    | jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text' 2>/dev/null \
+    | tail -3 | head -c 800)
+  if [ -n "$recent" ]; then
+    summary="$recent"
+  fi
+fi
 
 if [ -z "$summary" ] || [ "$summary" = "null" ]; then
   exit 0
 fi
 
-# Escape for JSON embedding
-summary_escaped=$(echo "$summary" | tr '\n' ' ' | sed 's/"/\\"/g' | head -c 400)
-
 # Pick a random voice
 voice_id="${voices[$((RANDOM % ${#voices[@]}))]}"
 
-# Build AWS profile flag (only if AWS_PROFILE is set)
-profile_flag=""
-if [ -n "${AWS_PROFILE:-}" ]; then
-  profile_flag="--profile $AWS_PROFILE"
-fi
-
-# Summarize with Bedrock Haiku
-# shellcheck disable=SC2086
-aws bedrock-runtime invoke-model \
-  $profile_flag \
-  --region "$aws_region" \
-  --model-id "$bedrock_model" \
-  --content-type application/json \
-  --accept application/json \
-  --body "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":30,\"messages\":[{\"role\":\"user\",\"content\":\"Summarize what was done into a single brief spoken announcement, under 10 words, like a computer assistant would say to a developer. No quotes, no markdown. Example: Settings file updated with new hooks. Here is what was done: $summary_escaped\"}]}" \
-  "$bedrock_out" >/dev/null 2>&1
-
-spoken=$(jq -r '.content[0].text // empty' "$bedrock_out" 2>/dev/null)
+# Summarize with claude -p (uses your existing auth — Max, API, or Bedrock)
+summary_truncated=$(echo "$summary" | tr '\n' ' ' | head -c 400)
+spoken=$(echo "Summarize what was done into a single brief spoken announcement, under 10 words, like a computer assistant would say to a developer. No quotes, no markdown. Example: Settings file updated with new hooks. Here is what was done: $summary_truncated" \
+  | claude -p --model haiku 2>/dev/null | head -1)
 
 if [ -z "$spoken" ] || [ "$spoken" = "null" ]; then
   exit 0
