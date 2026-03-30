@@ -92,18 +92,14 @@ if [ "$hook_event" = "Stop" ]; then
 fi
 
 # Extract context: last assistant message + recent transcript messages
-summary=$(echo "$input" | jq -r '.last_assistant_message // empty' | head -c 500)
-transcript=$(echo "$input" | jq -r '.transcript_path // empty')
-
-# Enrich with last 2-3 assistant messages from transcript for better context
-if [ -n "$transcript" ] && [ -f "$transcript" ]; then
-  recent=$(tail -20 "$transcript" \
-    | jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text' 2>/dev/null \
-    | tail -3 | head -c 800)
-  if [ -n "$recent" ]; then
-    summary="$recent"
-  fi
-fi
+# Extract last assistant message, strip markdown artifacts
+summary=$(echo "$input" | jq -r '.last_assistant_message // empty' \
+  | sed 's/```[^`]*```//g' \
+  | sed 's/`[^`]*`//g' \
+  | sed 's/[#*_\[\]()]//g' \
+  | tr '\n' ' ' \
+  | sed 's/  */ /g' \
+  | head -c 300)
 
 if [ -z "$summary" ] || [ "$summary" = "null" ]; then
   exit 0
@@ -113,9 +109,10 @@ fi
 voice_id="${voices[$((RANDOM % ${#voices[@]}))]}"
 
 # Summarize with claude -p (uses your existing auth — Max, API, or Bedrock)
-summary_truncated=$(echo "$summary" | tr '\n' ' ' | head -c 400)
-spoken=$(echo "Summarize what was done into a single brief spoken announcement, under 10 words, like a computer assistant would say to a developer. No quotes, no markdown. Example: Settings file updated with new hooks. Here is what was done: $summary_truncated" \
-  | claude -p --model haiku 2>/dev/null | head -1)
+spoken=$(printf "You are a computer voice assistant. Read this text and reply with ONLY 3-7 words describing what was accomplished. No preamble, no quotes, no punctuation except periods. Examples of good replies: Status line configured. Repository pushed to GitHub. Hook scripts updated and tested.\n\nText: %s" "$summary" \
+  | claude -p --model haiku 2>/dev/null \
+  | tr -d '"*#' \
+  | head -1)
 
 if [ -z "$spoken" ] || [ "$spoken" = "null" ]; then
   exit 0
