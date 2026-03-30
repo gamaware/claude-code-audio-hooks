@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end test for Claude Code audio hooks
 #
-# Verifies prerequisites, claude CLI, ElevenLabs API, and audio playback.
+# Verifies prerequisites, AWS Bedrock access, ElevenLabs API, and audio playback.
 
 set -euo pipefail
 
@@ -27,7 +27,7 @@ echo ""
 
 echo "--- Prerequisites ---"
 check "jq installed" command -v jq
-check "claude CLI installed" command -v claude
+check "aws CLI installed" command -v aws
 check "curl installed" command -v curl
 
 if command -v afplay &>/dev/null; then
@@ -65,17 +65,53 @@ fi
 
 echo ""
 
-# --- Claude CLI ---
+# --- AWS Bedrock ---
 
-echo "--- Claude CLI (Summarization) ---"
+echo "--- AWS Bedrock ---"
 
-spoken=$(echo "Say exactly: Test passed" | claude -p --model haiku 2>/dev/null | head -1)
-if [ -n "$spoken" ]; then
-  echo "[PASS] claude -p responded: $spoken"
+profile_flag=""
+if [ -n "${AWS_PROFILE:-}" ]; then
+  profile_flag="--profile $AWS_PROFILE"
+  echo "[INFO] Using AWS profile: $AWS_PROFILE"
+fi
+
+region="${AWS_REGION:-us-east-1}"
+model="${BEDROCK_MODEL_ID:-us.anthropic.claude-haiku-4-5-20251001-v1:0}"
+
+# shellcheck disable=SC2086
+if aws sts get-caller-identity $profile_flag &>/dev/null; then
+  echo "[PASS] AWS credentials valid"
   ((pass++))
 else
-  echo "[FAIL] claude -p did not respond"
-  echo "       Ensure you are logged in: claude /login"
+  echo "[FAIL] AWS credentials invalid or expired"
+  echo "       Run: aws sso login --profile YOUR_PROFILE"
+  ((fail++))
+fi
+
+bedrock_out="/tmp/claude-tts-test-$$.json"
+trap 'rm -f "$bedrock_out" /tmp/claude-tts-test-$$.mp3' EXIT
+
+# shellcheck disable=SC2086
+if aws bedrock-runtime invoke-model \
+  $profile_flag \
+  --region "$region" \
+  --model-id "$model" \
+  --content-type application/json \
+  --accept application/json \
+  --body '{"anthropic_version":"bedrock-2023-05-31","max_tokens":10,"messages":[{"role":"user","content":"Say hello in 3 words"}]}' \
+  "$bedrock_out" &>/dev/null; then
+
+  spoken=$(jq -r '.content[0].text // empty' "$bedrock_out" 2>/dev/null)
+  if [ -n "$spoken" ]; then
+    echo "[PASS] Bedrock Haiku responded: $spoken"
+    ((pass++))
+  else
+    echo "[FAIL] Bedrock returned empty response"
+    ((fail++))
+  fi
+else
+  echo "[FAIL] Bedrock invoke-model failed"
+  echo "       Check model access: aws bedrock list-inference-profiles --region $region"
   ((fail++))
 fi
 
@@ -83,12 +119,10 @@ echo ""
 
 # --- ElevenLabs ---
 
-echo "--- ElevenLabs TTS ---"
-
-tts_out="/tmp/claude-tts-test-$$.mp3"
-trap 'rm -f "$tts_out"' EXIT
+echo "--- ElevenLabs ---"
 
 if [ -n "${ELEVENLABS_API_KEY:-}" ]; then
+  tts_out="/tmp/claude-tts-test-$$.mp3"
   tts_model="${TTS_MODEL:-eleven_turbo_v2_5}"
   voice_id="hpp4J3VqNfWAUOO0d1Us"  # Bella (test voice)
 

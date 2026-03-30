@@ -1,6 +1,8 @@
 {
   "env": {
-    "ELEVENLABS_API_KEY": "YOUR_ELEVENLABS_API_KEY"
+    "ELEVENLABS_API_KEY": "YOUR_ELEVENLABS_API_KEY",
+    "AWS_PROFILE": "YOUR_AWS_PROFILE",
+    "AWS_REGION": "us-east-1"
   },
   "hooks": {
     "Stop": [

@@ -15,7 +15,7 @@ echo ""
 # --- Check prerequisites ---
 
 missing=()
-for cmd in jq claude curl; do
+for cmd in jq aws curl; do
   if ! command -v "$cmd" &>/dev/null; then
     missing+=("$cmd")
   else
@@ -56,20 +56,25 @@ echo ""
 
 echo "=== Next Steps ==="
 echo ""
-echo "1. Get an ElevenLabs API key (free tier works):"
+echo "1. Set up AWS Bedrock access:"
+echo "   See docs/bedrock-setup.md for IAM policy and credentials."
+echo ""
+echo "2. Get an ElevenLabs API key (free tier works):"
 echo "   See docs/elevenlabs-setup.md for step-by-step instructions."
 echo ""
-echo "2. Add your API key to ~/.claude/settings.json:"
+echo "3. Add your keys to ~/.claude/settings.json:"
 echo ""
 echo "   \"env\": {"
-echo "     \"ELEVENLABS_API_KEY\": \"your-key-here\""
+echo "     \"ELEVENLABS_API_KEY\": \"your-key-here\","
+echo "     \"AWS_PROFILE\": \"your-aws-profile\","
+echo "     \"AWS_REGION\": \"us-east-1\""
 echo "   }"
 echo ""
-echo "3. Add the hooks config to ~/.claude/settings.json."
+echo "4. Add the hooks config to ~/.claude/settings.json."
 echo "   See config/settings-snippet.json for the block to merge."
 echo ""
-echo "4. Restart Claude Code to load the new hooks."
+echo "5. Restart Claude Code to load the new hooks."
 echo ""
-echo "5. Run ./test.sh to verify everything works."
+echo "6. Run ./test.sh to verify everything works."
 echo ""
 echo "=== Done ==="

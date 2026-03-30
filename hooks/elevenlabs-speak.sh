@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# Claude Code audio hook — spoken summary using claude -p + ElevenLabs TTS
+# Claude Code audio hook — spoken summary using Bedrock Haiku + ElevenLabs TTS
 #
-# Flow: Hook payload (stdin) -> claude -p Haiku (summarize) -> ElevenLabs TTS -> audio
+# Flow: Hook payload (stdin) -> Bedrock Haiku (summarize) -> ElevenLabs TTS -> audio
 #
-# Works with any Claude Code auth method (Max, API key, Bedrock) — no extra
-# credentials needed. The summarization runs through your existing claude CLI.
+# Handles both Stop and TaskCompleted events. Stop events are filtered by message
+# length to avoid noise on short replies. A lockfile prevents duplicate announcements
+# when both events fire simultaneously.
 #
-# Requires: jq, claude CLI, curl, ELEVENLABS_API_KEY env var
+# Requires: jq, aws CLI (with Bedrock access), curl, ELEVENLABS_API_KEY env var
 
 set -euo pipefail
 
 # --- Configuration (override via environment variables) ---
 
 tts_model="${TTS_MODEL:-eleven_turbo_v2_5}"
+aws_region="${AWS_REGION:-us-east-1}"
+bedrock_model="${BEDROCK_MODEL_ID:-us.anthropic.claude-haiku-4-5-20251001-v1:0}"
 
 # All default ElevenLabs voices (male, female, neutral)
 default_voices=(
@@ -50,7 +53,7 @@ fi
 
 # --- Prerequisite checks ---
 
-for cmd in jq claude curl; do
+for cmd in jq aws curl; do
   if ! command -v "$cmd" &>/dev/null; then
     exit 0  # Fail silently — async hooks should not block Claude Code
   fi
@@ -63,7 +66,9 @@ fi
 # --- Temp file cleanup ---
 
 tmpfile="/tmp/claude-tts-$$.mp3"
-trap 'rm -f "$tmpfile"' EXIT
+bedrock_out="/tmp/claude-tts-bedrock-$$.json"
+lockfile="/tmp/claude-tts.lock"
+trap 'rm -f "$tmpfile" "$bedrock_out"' EXIT
 
 # --- Cross-platform audio player ---
 
@@ -81,17 +86,26 @@ play_audio() {
 
 input=$(cat)
 
+# Debounce: skip if another instance ran within 15 seconds
+if [ -f "$lockfile" ]; then
+  lock_age=$(( $(date +%s) - $(stat -f %m "$lockfile" 2>/dev/null || stat -c %Y "$lockfile" 2>/dev/null || echo 0) ))
+  if [ "$lock_age" -lt 15 ]; then
+    exit 0
+  fi
+fi
+touch "$lockfile"
+
 # Skip short responses on Stop hook (TaskCompleted always runs)
 hook_event=$(echo "$input" | jq -r '.hook_event_name // empty')
 if [ "$hook_event" = "Stop" ]; then
   msg_length=$(echo "$input" | jq -r '.last_assistant_message // "" | length')
   min_length="${STOP_MIN_MESSAGE_LENGTH:-100}"
   if [ "$msg_length" -lt "$min_length" ]; then
+    rm -f "$lockfile"
     exit 0
   fi
 fi
 
-# Extract context: last assistant message + recent transcript messages
 # Extract last assistant message, strip markdown artifacts
 summary=$(echo "$input" | jq -r '.last_assistant_message // empty' \
   | sed 's/```[^`]*```//g' \
@@ -99,22 +113,40 @@ summary=$(echo "$input" | jq -r '.last_assistant_message // empty' \
   | sed 's/[#*_\[\]()]//g' \
   | tr '\n' ' ' \
   | sed 's/  */ /g' \
-  | head -c 300)
+  | head -c 500)
 
 if [ -z "$summary" ] || [ "$summary" = "null" ]; then
+  rm -f "$lockfile"
   exit 0
 fi
+
+# Escape for JSON embedding
+summary_escaped=$(echo "$summary" | sed 's/"/\\"/g' | head -c 400)
 
 # Pick a random voice
 voice_id="${voices[$((RANDOM % ${#voices[@]}))]}"
 
-# Summarize with claude -p (uses your existing auth — Max, API, or Bedrock)
-spoken=$(printf "You are a computer voice assistant. Read this text and reply with ONLY 3-7 words describing what was accomplished. No preamble, no quotes, no punctuation except periods. Examples of good replies: Status line configured. Repository pushed to GitHub. Hook scripts updated and tested.\n\nText: %s" "$summary" \
-  | claude -p --model haiku 2>/dev/null \
-  | tr -d '"*#' \
-  | head -1)
+# Build AWS profile flag (only if AWS_PROFILE is set)
+profile_flag=""
+if [ -n "${AWS_PROFILE:-}" ]; then
+  profile_flag="--profile $AWS_PROFILE"
+fi
+
+# Summarize with Bedrock Haiku
+# shellcheck disable=SC2086
+aws bedrock-runtime invoke-model \
+  $profile_flag \
+  --region "$aws_region" \
+  --model-id "$bedrock_model" \
+  --content-type application/json \
+  --accept application/json \
+  --body "{\"anthropic_version\":\"bedrock-2023-05-31\",\"max_tokens\":50,\"messages\":[{\"role\":\"user\",\"content\":\"You are a ship computer voice assistant. Summarize the following into ONE sentence of 8-15 words. Be SPECIFIC — mention actual file names, tools, actions, or technologies. Sound concise and authoritative like a sci-fi computer briefing.\n\nGood examples:\nBedrock hook restored with debounce lockfile and voice rotation.\nPushed three commits to claude-code-audio-hooks on GitHub.\nShellcheck passed on all scripts, no secrets detected in repo.\n\nBad examples (too generic):\nAll checks passed.\nTask completed successfully.\nEverything is working.\n\nSummarize this:\n$summary_escaped\"}]}" \
+  "$bedrock_out" >/dev/null 2>&1
+
+spoken=$(jq -r '.content[0].text // empty' "$bedrock_out" 2>/dev/null | tr -d '"*#' | head -1)
 
 if [ -z "$spoken" ] || [ "$spoken" = "null" ]; then
+  rm -f "$lockfile"
   exit 0
 fi
 
@@ -127,3 +159,5 @@ curl -s \
   --output "$tmpfile"
 
 play_audio "$tmpfile"
+
+rm -f "$lockfile"
