@@ -1,0 +1,31 @@
+{
+  "env": {
+    "ELEVENLABS_API_KEY": "YOUR_ELEVENLABS_API_KEY",
+    "AWS_PROFILE": "YOUR_AWS_PROFILE",
+    "AWS_REGION": "us-east-1"
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/stop-sound.sh",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/elevenlabs-speak.sh",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

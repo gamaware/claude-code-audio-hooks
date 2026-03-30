@@ -1,0 +1,7 @@
+*.mp3
+*.wav
+*.aiff
+.env
+.env.*
+.DS_Store
+/tmp/
